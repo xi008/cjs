@@ -38,7 +38,8 @@ static void stub_ReleaseStringUTFChars(JNIEnv *env, jstring s, const char *c) {
 }
 
 static jstring stub_NewStringUTF(JNIEnv *env, const char *s) {
-  (void)env; return s;
+  (void)env;
+  return s ? (jstring)strdup(s) : NULL;
 }
 
 static const struct JNINativeInterface stub_table = {
