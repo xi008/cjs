@@ -47,7 +47,7 @@ build_abi() {
     armeabi-v7a) target="android-arm" ;;
     arm64-v8a) target="android-arm64" ;;
   esac
-  if [ -f "$dest/libcurl.a" ]; then
+  if [ -f "$dest/lib/libcurl.a" ]; then
     echo "[$abi] deps cached"
     return
   fi
