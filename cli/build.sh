@@ -45,9 +45,9 @@ build_android() {
     abi=${spec%%:*}
     triple=${spec##*:}
     CC="$PREBUILT/bin/${triple}21-clang"
-    if [ -f "$DEPS/$abi/libcurl.a" ]; then
+    if [ -f "$DEPS/$abi/lib/libcurl.a" ]; then
       EXTRA="-I$DEPS/$abi/include"
-      CURLLIBS="$DEPS/$abi/libcurl.a $DEPS/$abi/libssl.a $DEPS/$abi/libcrypto.a"
+      CURLLIBS="$DEPS/$abi/lib/libcurl.a $DEPS/$abi/lib/libssl.a $DEPS/$abi/lib/libcrypto.a"
     else
       echo "deps missing for $abi, run cli/deps/build_https.sh first" >&2
       exit 1
