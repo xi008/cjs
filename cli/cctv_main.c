@@ -189,10 +189,9 @@ static char *rewrite_playlist(char *text, const char *playlist_url) {
             char *abs = resolve_url(playlist_url, start);
             *end = saved;
             if (abs) {
-              char *enc = b64u_encode_str(abs);
-              char *newuri = malloc(strlen(enc) + 32);
+              char *newuri = malloc(strlen(abs) + 32);
               if (newuri) {
-                sprintf(newuri, "URI=\"/p/%s\"", enc);
+                sprintf(newuri, "URI=\"/url=%s\"", abs);
                 size_t pre = (size_t)(uri + 5 - line);
                 char *rest = end + 1;
                 size_t need = o + pre + strlen(newuri) + strlen(rest) + 4;
@@ -207,7 +206,6 @@ static char *rewrite_playlist(char *text, const char *playlist_url) {
                   wrote_ext = 1;
                 }
                 free(newuri);
-                free(enc);
               }
               free(abs);
             }
@@ -226,13 +224,11 @@ static char *rewrite_playlist(char *text, const char *playlist_url) {
     } else if (ll > 0) {
       char *abs = resolve_url(playlist_url, line);
       if (abs) {
-        char *enc = b64u_encode_str(abs);
-        size_t need = o + strlen(enc) + 8;
+        size_t need = o + strlen(abs) + 16;
         if (need < cap) {
-          sprintf(out + o, "/p/%s\n", enc);
+          sprintf(out + o, "/url=%s\n", abs);
           o += strlen(out + o);
         }
-        free(enc);
         free(abs);
       }
     }
@@ -262,12 +258,16 @@ static int decrypt_in_place(unsigned char *buf, size_t len) {
 
 static void send_response(int fd, int code, const char *ctype, const void *body, size_t blen) {
   char hdr[512];
-  const char *msg = code == 200 ? "OK" : code == 404 ? "Not Found" : code == 502 ? "Bad Gateway" : "Error";
+  const char *msg = code == 200 ? "OK" : code == 206 ? "Partial Content" :
+                    code == 404 ? "Not Found" : code == 405 ? "Method Not Allowed" :
+                    code == 403 ? "Forbidden" : code == 502 ? "Bad Gateway" : "Error";
   int n = snprintf(hdr, sizeof(hdr),
                    "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
-                   "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+                   "Access-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n"
+                   "Connection: close\r\n\r\n",
                    code, msg, ctype, blen);
   if (send(fd, hdr, n, 0) < 0) return;
+  if (!body || !blen) return;
   size_t off = 0;
   while (off < blen) {
     ssize_t w = send(fd, (const char *)body + off, blen - off, 0);
@@ -276,34 +276,79 @@ static void send_response(int fd, int code, const char *ctype, const void *body,
   }
 }
 
+static void send_headers_only(int fd, int code, const char *ctype, size_t blen) {
+  char hdr[512];
+  const char *msg = code == 200 ? "OK" : code == 404 ? "Not Found" : "Error";
+  int n = snprintf(hdr, sizeof(hdr),
+                   "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\n"
+                   "Access-Control-Allow-Origin: *\r\nAccept-Ranges: bytes\r\n"
+                   "Connection: close\r\n\r\n",
+                   code, msg, ctype, blen);
+  send(fd, hdr, n, 0);
+}
+
+static int hex_val(int c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static void url_decode(char *s) {
+  char *r = s, *w = s;
+  while (*r) {
+    if (r[0] == '%' && hex_val((unsigned char)r[1]) >= 0 && hex_val((unsigned char)r[2]) >= 0) {
+      *w++ = (char)((hex_val((unsigned char)r[1]) << 4) | hex_val((unsigned char)r[2]));
+      r += 3;
+    } else if (r[0] == '+' && r == s) {
+      r++;
+    } else {
+      *w++ = *r++;
+    }
+  }
+  *w = 0;
+}
+
 static void handle_client(int fd) {
   char req[8192];
   ssize_t n = recv(fd, req, sizeof(req) - 1, 0);
   if (n <= 0) { close(fd); return; }
   req[n] = 0;
-  char method[8] = {0}, path[4096] = {0};
-  if (sscanf(req, "%7s %4095s", method, path) != 2 || strcmp(method, "GET")) {
-    send_response(fd, 404, "text/plain", "bad request", 11);
+  char method[8] = {0}, path[8192] = {0};
+  if (sscanf(req, "%7s %8191s", method, path) != 2 ||
+      (strcmp(method, "GET") && strcmp(method, "HEAD"))) {
+    send_response(fd, 405, "text/plain", "method not allowed", 19);
     close(fd);
     return;
   }
+  int is_head = (strcmp(method, "HEAD") == 0);
+
   if (!strcmp(path, "/healthz")) {
     send_response(fd, 200, "text/plain", "ok", 2);
     close(fd);
     return;
   }
-  if (strncmp(path, "/p/", 3)) {
-    send_response(fd, 404, "text/plain", "not found", 9);
+
+  char *url = NULL;
+  if (!strncmp(path, "/p/", 3)) {
+    size_t ulen = 0;
+    unsigned char *urlbytes = b64u_decode(path + 3, &ulen);
+    if (!urlbytes) { send_response(fd, 400, "text/plain", "bad b64", 6); close(fd); return; }
+    url = malloc(ulen + 1);
+    memcpy(url, urlbytes, ulen);
+    url[ulen] = 0;
+    free(urlbytes);
+  } else if (!strncmp(path, "/url=", 5)) {
+    url = strdup(path + 5);
+    if (!url) { close(fd); return; }
+    url_decode(url);
+  } else {
+    send_response(fd, 404, "text/plain",
+                  "usage: /url=<m3u8-or-ts-url>  or  /p/<base64url(url)>", 55);
     close(fd);
     return;
   }
-  size_t ulen = 0;
-  unsigned char *urlbytes = b64u_decode(path + 3, &ulen);
-  if (!urlbytes) { close(fd); return; }
-  char *url = malloc(ulen + 1);
-  memcpy(url, urlbytes, ulen);
-  url[ulen] = 0;
-  free(urlbytes);
+
   char *q = strchr(url, '?');
   int is_playlist = 0;
   if (q) *q = 0;
@@ -313,16 +358,29 @@ static void handle_client(int fd) {
   fetch_result fr;
   int fok = fetch_url(url, &fr, "https://tv.cctv.com/", 20);
   if (fok != 0 || !fr.data) {
+    fprintf(stderr, "[h5e] fetch FAILED %s\n", url);
     send_response(fd, 502, "text/plain", "upstream fetch failed", 21);
     free(url);
     if (fr.data) free(fr.data);
     close(fd);
     return;
   }
+  if (fr.code >= 400) {
+    fprintf(stderr, "[h5e] upstream %d %s\n", fr.code, url);
+    send_response(fd, fr.code, "text/plain", fr.data, fr.len);
+    free(url);
+    free(fr.data);
+    close(fd);
+    return;
+  }
+
   if (is_playlist) {
     char *rewritten = rewrite_playlist(fr.data, url);
     if (rewritten) {
-      send_response(fd, 200, "application/vnd.apple.mpegurl", rewritten, strlen(rewritten));
+      size_t rl = strlen(rewritten);
+      fprintf(stderr, "[h5e] playlist %zu -> %zu bytes %s\n", fr.len, rl, url);
+      if (is_head) send_headers_only(fd, 200, "application/vnd.apple.mpegurl", rl);
+      else send_response(fd, 200, "application/vnd.apple.mpegurl", rewritten, rl);
       free(rewritten);
     } else {
       send_response(fd, 502, "text/plain", "rewrite failed", 14);
@@ -330,14 +388,19 @@ static void handle_client(int fd) {
   } else if (is_h5e_url(url)) {
     int rc = decrypt_in_place((unsigned char *)fr.data, fr.len);
     if (rc == -1) {
+      fprintf(stderr, "[h5e] decrypt trap %s\n", url);
       send_response(fd, 502, "text/plain", "decrypt trap", 12);
     } else {
       const char *ct = fr.ctype[0] ? fr.ctype : "video/mp2t";
-      send_response(fd, 200, ct, fr.data, fr.len);
+      fprintf(stderr, "[h5e] ts %zu bytes rc=%d %s\n", fr.len, rc, url);
+      if (is_head) send_headers_only(fd, 200, ct, fr.len);
+      else send_response(fd, 200, ct, fr.data, fr.len);
     }
   } else {
     const char *ct = fr.ctype[0] ? fr.ctype : "application/octet-stream";
-    send_response(fd, 200, ct, fr.data, fr.len);
+    fprintf(stderr, "[h5e] passthrough %zu bytes %s\n", fr.len, url);
+    if (is_head) send_headers_only(fd, 200, ct, fr.len);
+    else send_response(fd, 200, ct, fr.data, fr.len);
   }
   free(url);
   free(fr.data);
