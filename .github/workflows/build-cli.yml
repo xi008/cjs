@@ -60,6 +60,10 @@ jobs:
           export ANDROID_NDK_HOME="$HOME/android-ndk"
           bash cli/build.sh android
 
+      - name: Bundle cacert
+        run: |
+          for d in dist/*/; do cp cli/cacert.pem "$d"; done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
