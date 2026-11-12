@@ -95,7 +95,7 @@ static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata
   return total;
 }
 
-static int curl_header_cb(char *buffer, size_t size, size_t nitems, void *userdata) {
+static size_t curl_header_cb(char *buffer, size_t size, size_t nitems, void *userdata) {
   fetch_result *r = (fetch_result *)userdata;
   if (nitems > 14 && strncasecmp(buffer, "Content-Type:", 13) == 0) {
     size_t i = 13, j = 0;
