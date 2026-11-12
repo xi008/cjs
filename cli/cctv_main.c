@@ -80,6 +80,7 @@ typedef struct {
   char *data;
   size_t len;
   int code;
+  int err;
   char ctype[64];
 } fetch_result;
 
@@ -113,11 +114,9 @@ static int is_h5e_url(const char *url) {
          strstr(url, ".m4s") != NULL || strstr(url, "hls") != NULL;
 }
 
-static int fetch_url(const char *url, fetch_result *r, const char *referer, long timeout_sec) {
+static int fetch_once(const char *url, fetch_result *r, const char *referer, long timeout_sec, int verify) {
   CURL *curl = curl_easy_init();
   if (!curl) return -1;
-  memset(r, 0, sizeof(*r));
-  strcpy(r->ctype, "application/octet-stream");
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
@@ -128,12 +127,44 @@ static int fetch_url(const char *url, fetch_result *r, const char *referer, long
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36");
   if (referer) curl_easy_setopt(curl, CURLOPT_REFERER, referer);
+  if (verify) {
+    if (access("/system/etc/security/cacerts", R_OK) == 0)
+      curl_easy_setopt(curl, CURLOPT_CAPATH, "/system/etc/security/cacerts");
+    else if (access("/sdcard/lz/cacert.pem", R_OK) == 0)
+      curl_easy_setopt(curl, CURLOPT_CAINFO, "/sdcard/lz/cacert.pem");
+    else {
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+  } else {
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+  }
   CURLcode res = curl_easy_perform(curl);
   long code = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
-  curl_easy_cleanup(curl);
+  r->err = (int)res;
   r->code = (int)code;
+  curl_easy_cleanup(curl);
   return res == CURLE_OK ? 0 : -1;
+}
+
+static int fetch_url(const char *url, fetch_result *r, const char *referer, long timeout_sec) {
+  memset(r, 0, sizeof(*r));
+  strcpy(r->ctype, "application/octet-stream");
+  int rc = fetch_once(url, r, referer, timeout_sec, 1);
+  if (rc != 0) {
+    fprintf(stderr, "[h5e] curl %d (%s) verify=1 %s\n", r->err, curl_easy_strerror((CURLcode)r->err), url);
+    free(r->data);
+    r->data = NULL;
+    r->len = 0;
+    rc = fetch_once(url, r, referer, timeout_sec, 0);
+    if (rc != 0)
+      fprintf(stderr, "[h5e] curl %d (%s) verify=0 FAILED %s\n", r->err, curl_easy_strerror((CURLcode)r->err), url);
+    else
+      fprintf(stderr, "[h5e] curl ok after disable TLS verify %s\n", url);
+  }
+  return rc;
 }
 
 static char *resolve_url(const char *base, const char *rel) {
