@@ -55,7 +55,7 @@ build_abi() {
 
   pushd "openssl-${OPENSSL_VER}" >/dev/null
   if [ ! -f "$dest/.openssl.done" ]; then
-    make clean >/dev/null 2>&1 || true
+    [ -f Makefile ] && make clean >/dev/null 2>&1 || true
     unset CC AR RANLIB || true
     perl ./Configure "$target" no-shared no-tests no-ui-console no-apps \
       -D__ANDROID_API__=21 \
@@ -68,6 +68,7 @@ build_abi() {
 
   pushd "curl-${CURL_VER}" >/dev/null
   if [ ! -f "$dest/.curl.done" ]; then
+    [ -f Makefile ] && make distclean >/dev/null 2>&1 || true
     export CC="$cc" AR="$ar" RANLIB="$PREBUILT/bin/llvm-ranlib"
     ./configure --host="$host" --prefix="$dest" \
       --disable-shared --disable-ldap --disable-ldaps --disable-rtsp \
