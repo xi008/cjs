@@ -114,6 +114,32 @@ static int is_h5e_url(const char *url) {
          strstr(url, ".m4s") != NULL || strstr(url, "hls") != NULL;
 }
 
+static int g_ca_ready = 0;
+static char g_ca_path[512];
+
+static void ensure_ca(void) {
+  if (g_ca_ready) return;
+  g_ca_ready = 1;
+  g_ca_path[0] = 0;
+  if (access("/system/etc/security/cacerts", R_OK) == 0) return;
+  char exe[512];
+  ssize_t el = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+  if (el > 0) {
+    exe[el] = 0;
+    char *slash = strrchr(exe, '/');
+    if (slash) {
+      *slash = 0;
+      snprintf(g_ca_path, sizeof(g_ca_path), "%s/cacert.pem", exe);
+      if (access(g_ca_path, R_OK) == 0) return;
+      g_ca_path[0] = 0;
+    }
+  }
+  if (access("/sdcard/lz/cacert.pem", R_OK) == 0) {
+    strcpy(g_ca_path, "/sdcard/lz/cacert.pem");
+    return;
+  }
+}
+
 static int fetch_once(const char *url, fetch_result *r, const char *referer, long timeout_sec, int verify) {
   CURL *curl = curl_easy_init();
   if (!curl) return -1;
@@ -128,11 +154,10 @@ static int fetch_once(const char *url, fetch_result *r, const char *referer, lon
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36");
   if (referer) curl_easy_setopt(curl, CURLOPT_REFERER, referer);
   if (verify) {
-    if (access("/system/etc/security/cacerts", R_OK) == 0)
-      curl_easy_setopt(curl, CURLOPT_CAPATH, "/system/etc/security/cacerts");
-    else if (access("/sdcard/lz/cacert.pem", R_OK) == 0)
-      curl_easy_setopt(curl, CURLOPT_CAINFO, "/sdcard/lz/cacert.pem");
-    else {
+    ensure_ca();
+    if (g_ca_path[0]) {
+      curl_easy_setopt(curl, CURLOPT_CAINFO, g_ca_path);
+    } else {
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     }
