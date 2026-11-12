@@ -22,6 +22,10 @@ find_ndk() {
 
 NDK=$(find_ndk) || { echo "NDK not found" >&2; exit 1; }
 PREBUILT="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+export ANDROID_NDK_ROOT="$NDK"
+export ANDROID_NDK_HOME="$NDK"
+export PATH="$PREBUILT/bin:$PATH"
+unset CROSS_COMPILE CC AR RANLIB || true
 
 fetch() {
   local url="$1" file="$2"
@@ -52,26 +56,26 @@ build_abi() {
   pushd "openssl-${OPENSSL_VER}" >/dev/null
   if [ ! -f "$dest/.openssl.done" ]; then
     make clean >/dev/null 2>&1 || true
-    perl ./Configure "$target" no-shared no-tests no-ui-console \
+    unset CC AR RANLIB || true
+    perl ./Configure "$target" no-shared no-tests no-ui-console no-apps \
       -D__ANDROID_API__=21 \
-      CC="$cc" AR="$ar" RANLIB="$PREBUILT/bin/llvm-ranlib" \
       --prefix="$dest" --openssldir="$dest/ssl"
-    make -j"$(nproc)"
-    make install_sw
+    make -j"$(nproc)" build_libs
+    make install_dev
     touch "$dest/.openssl.done"
   fi
   popd >/dev/null
 
   pushd "curl-${CURL_VER}" >/dev/null
   if [ ! -f "$dest/.curl.done" ]; then
+    export CC="$cc" AR="$ar" RANLIB="$PREBUILT/bin/llvm-ranlib"
     ./configure --host="$host" --prefix="$dest" \
       --disable-shared --disable-ldap --disable-ldaps --disable-rtsp \
       --disable-dict --disable-telnet --disable-tftp --disable-pop3 \
       --disable-imap --disable-smb --disable-smtp --disable-gopher \
       --disable-manual --disable-ntlm-wb --disable-unix-sockets \
       --without-zlib --without-brotli --without-zstd --without-libidn2 \
-      --with-openssl="$dest" --without-nghttp2 --without-libpsl \
-      CC="$cc" AR="$ar" RANLIB="$PREBUILT/bin/llvm-ranlib"
+      --with-openssl="$dest" --without-nghttp2 --without-libpsl
     make -j"$(nproc)"
     make install
     touch "$dest/.curl.done"
